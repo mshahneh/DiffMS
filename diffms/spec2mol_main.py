@@ -18,9 +18,13 @@ from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
 from pytorch_lightning.loggers import CSVLogger, WandbLogger
 from pytorch_lightning.utilities.warnings import PossibleUserWarning
 
-from src import utils
-from src.diffusion_model_fp2mol import FP2MolDenoisingDiffusion
-from src.diffusion.extra_features import DummyExtraFeatures, ExtraFeatures
+from diffms import utils
+from diffms.diffusion_model_spec2mol import Spec2MolDenoisingDiffusion
+from diffms.diffusion.extra_features import DummyExtraFeatures, ExtraFeatures
+from diffms.metrics.molecular_metrics_discrete import TrainMolecularMetricsDiscrete
+from diffms.diffusion.extra_features_molecular import ExtraMolecularFeatures
+from diffms.analysis.visualization import MolecularVisualization
+from diffms.datasets import spec2mol_dataset
 
 
 warnings.filterwarnings("ignore", category=PossibleUserWarning)
@@ -33,10 +37,9 @@ def get_resume(cfg, model_kwargs):
     resume = cfg.general.test_only
     val_samples_to_generate = cfg.general.val_samples_to_generate
     test_samples_to_generate = cfg.general.test_samples_to_generate
-    if cfg.model.type == 'discrete':
-        model = FP2MolDenoisingDiffusion.load_from_checkpoint(resume, **model_kwargs)
-    else:
-        raise NotImplementedError("Only discrete diffusion models are supported for FP2Mol dataset currently")
+
+    model = Spec2MolDenoisingDiffusion.load_from_checkpoint(resume, **model_kwargs)
+
     cfg = model.cfg
     cfg.general.test_only = resume
     cfg.general.name = name
@@ -55,10 +58,8 @@ def get_resume_adaptive(cfg, model_kwargs):
 
     resume_path = os.path.join(root_dir, cfg.general.resume)
 
-    if cfg.model.type == 'discrete':
-        model = FP2MolDenoisingDiffusion.load_from_checkpoint(resume_path, **model_kwargs)
-    else:
-        raise NotImplementedError("Only discrete diffusion models are supported for FP2Mol dataset currently")
+    model = Spec2MolDenoisingDiffusion.load_from_checkpoint(resume_path, **model_kwargs)
+    
     new_cfg = model.cfg
 
     for category in cfg:
@@ -71,25 +72,92 @@ def get_resume_adaptive(cfg, model_kwargs):
     new_cfg = utils.update_config_with_new_keys(new_cfg, saved_cfg)
     return new_cfg, model
 
-def load_decoder_from_lightning_ckpt(model, ckpt_path):
-    """ Load a model from a PyTorch Lightning checkpoint. """
-    state_dict = torch.load(ckpt_path, map_location='cpu')["state_dict"]
-    cleaned_state_dict = {}
-    for k, v in state_dict.items():
-        if k.startswith('model.'):
-            k = k[6:]
-            cleaned_state_dict[k] = v
-
-    model.model.load_state_dict(cleaned_state_dict, strict=True)
-    logging.info(f"Loaded model from: '{ckpt_path}'")
-
-def freeze_weights(model, cfg):
-    if cfg.general.finetune_strategy == 'freeze_transformer_layers':
-        for param in model.model.tf_layers.parameters():
+def apply_encoder_finetuning(model, strategy):    
+    if strategy is None:
+        pass
+    elif strategy == 'freeze':
+        for param in model.encoder.parameters():
             param.requires_grad = False
+    elif strategy == 'ft-unfold':
+        for param in model.encoder.named_parameters():
+            layer = param[0].split('.')[1]
+            if layer != '2':
+                param[1].requires_grad = False
+    elif strategy == 'freeze-unfold':
+        for param in model.encoder.named_parameters():
+            layer = param[0].split('.')[1]
+            if layer == '2':
+                param[1].requires_grad = False
+    elif strategy == 'ft-transformer':
+        for param in model.encoder.named_parameters():
+            layer = param[0].split('.')[1]
+            if layer != '0':
+                param[1].requires_grad = False
+    elif strategy == 'freeze-transformer':
+        for param in model.encoder.named_parameters():
+            layer = param[0].split('.')[1]
+            if layer == '0':
+                param[1].requires_grad = False
     else:
-        raise NotImplementedError("Unknown finetuning strategy")
+        raise NotImplementedError(f'Unknown Finetune Strategy: {strategy}')
+    
+def apply_decoder_finetuning(model, strategy):
+    if strategy is None:
+        pass
+    elif strategy == 'freeze':
+        for param in model.decoder.parameters():
+            param.requires_grad = False
+    elif strategy == 'ft-input':
+        for p in model.decoder.named_parameters():
+            layer_name = p[0].split('.')[0]
+            if layer_name not in ['mlp_in_X', 'mlp_in_E', 'mlp_in_y']:
+                p[1].requires_grad = False
+    elif strategy == 'freeze-input':
+        for p in model.decoder.named_parameters():
+            layer_name = p[0].split('.')[0]
+            if layer_name in ['mlp_in_X', 'mlp_in_E', 'mlp_in_y']:
+                p[1].requires_grad = False
+    elif strategy == 'ft-transformer':
+        for param in model.decoder.parameters():
+            param.requires_grad = False
+        for param in model.decoder.tf_layers.parameters():
+            param.requires_grad = True
+    elif strategy == 'freeze-transformer':
+        for param in model.decoder.tf_layers.parameters():
+            param.requires_grad = False
+    elif strategy == 'ft-output':
+        for p in model.decoder.named_parameters():
+            layer_name = p[0].split('.')[0]
+            if layer_name not in ['mlp_out_X', 'mlp_out_E', 'mlp_out_y']:
+                p[1].requires_grad = False
+    else:
+        raise NotImplementedError(f'Unknown Finetune Strategy: {strategy}')
 
+def load_weights(model, path):
+    """
+    Loads only the weights from a checkpoint file into the model without loading the full Lightning module.
+    
+    Args:
+        model: The model to load weights into
+        path: Path to the checkpoint file
+        
+    Returns:
+        The model with loaded weights
+    """
+    checkpoint = torch.load(path, map_location='cpu')
+    state_dict = checkpoint['state_dict'] if 'state_dict' in checkpoint else checkpoint
+    
+    # Filter out keys that don't match the model (for partial loading)
+    model_state_dict = model.state_dict()
+    filtered_state_dict = {k: v for k, v in state_dict.items() if k in model_state_dict}
+    
+    # Load the weights
+    missing_keys, unexpected_keys = model.load_state_dict(filtered_state_dict, strict=False)
+    logging.info(f"Loaded weights from {path}")
+    logging.info(f"Missing keys: {missing_keys}")
+    logging.info(f"Unexpected keys: {unexpected_keys}")
+    
+    return model
 
 @hydra.main(version_base='1.3', config_path='../configs', config_name='config')
 def main(cfg: DictConfig):
@@ -118,20 +186,11 @@ def main(cfg: DictConfig):
 
     dataset_config = cfg["dataset"]
 
-    if dataset_config["name"] != "fp2mol":
+    if dataset_config["name"] not in ("canopus", "msg"):
         raise NotImplementedError("Unknown dataset {}".format(cfg["dataset"]))
-    
-    from metrics.molecular_metrics import TrainMolecularMetrics, SamplingMolecularMetrics
-    from metrics.molecular_metrics_discrete import TrainMolecularMetricsDiscrete
-    from diffusion.extra_features_molecular import ExtraMolecularFeatures
-    from analysis.visualization import MolecularVisualization
 
-    from datasets import fp2mol_dataset
-        
-    datamodule = fp2mol_dataset.FP2MolDataModule(cfg)
-    logging.info("Dataset loaded")
-    logging.info(f"Train Size: {len(datamodule.train_dataloader())}, Val Size: {len(datamodule.val_dataloader())}, Test Size: {len(datamodule.test_dataloader())}")
-    dataset_infos = fp2mol_dataset.FP2Mol_infos(datamodule, cfg, recompute_statistics=False)
+    datamodule = spec2mol_dataset.Spec2MolDataModule(cfg) # TODO: Add hyper for n_bits
+    dataset_infos = spec2mol_dataset.Spec2MolDatasetInfos(datamodule, cfg)
 
     domain_features = ExtraMolecularFeatures(dataset_infos=dataset_infos)
     if cfg.model.extra_features is not None:
@@ -144,10 +203,11 @@ def main(cfg: DictConfig):
     logging.info("Dataset infos:", dataset_infos.output_dims)
     train_metrics = TrainMolecularMetricsDiscrete(dataset_infos)
 
+    # We do not evaluate novelty during training
     visualization_tools = MolecularVisualization(cfg.dataset.remove_h, dataset_infos=dataset_infos)
 
-    model_kwargs = {'dataset_infos': dataset_infos, 'train_metrics': train_metrics,
-                    'visualization_tools': visualization_tools, 'extra_features': extra_features, 'domain_features': domain_features}
+    model_kwargs = {'dataset_infos': dataset_infos, 'train_metrics': train_metrics, 'visualization_tools': visualization_tools,
+                    'extra_features': extra_features, 'domain_features': domain_features}
 
     if cfg.general.test_only:
         # When testing, previous configuration is fully loaded
@@ -163,10 +223,6 @@ def main(cfg: DictConfig):
     except OSError:
         pass
     try:
-        os.makedirs('models/')
-    except OSError:
-        pass
-    try:
         os.makedirs('logs/')
     except OSError:
         pass
@@ -176,26 +232,11 @@ def main(cfg: DictConfig):
     except OSError:
         pass
 
-    model = FP2MolDenoisingDiffusion(cfg=cfg, **model_kwargs)
-    
-    try:
-        if cfg.general.pretrained is not None:
-            if cfg.general.pretrained.endswith('.ckpt'):
-                load_decoder_from_lightning_ckpt(model, cfg.general.pretrained)
-            else:
-                raise NotImplementedError("Only PyTorch Lightning checkpoints currently supported!")
-    except Exception as e:
-        print("Could not load pretrained model:", e)
-            
-    try:
-        if cfg.general.finetune_strategy is not None:
-            freeze_weights(model, cfg)
-    except Exception as e:
-        print("Could not freeze weights:", e)
-        
+    model = Spec2MolDenoisingDiffusion(cfg=cfg, **model_kwargs)
+
     callbacks = []
     callbacks.append(LearningRateMonitor(logging_interval='step'))
-    if cfg.train.save_model:
+    if cfg.train.save_model: # TODO: More advanced checkpointing
         checkpoint_callback = ModelCheckpoint(dirpath=f"checkpoints/{cfg.general.name}", # best (top-5) checkpoints
                                               filename='{epoch}',
                                               monitor='val/NLL',
@@ -206,7 +247,7 @@ def main(cfg: DictConfig):
         callbacks.append(last_ckpt_save)
         callbacks.append(checkpoint_callback)
 
-    if cfg.train.ema_decay > 0: # TODO: Implement EMA for FP2Mol
+    if cfg.train.ema_decay > 0:
         ema_callback = utils.EMA(decay=cfg.train.ema_decay)
         callbacks.append(ema_callback)
 
@@ -221,7 +262,7 @@ def main(cfg: DictConfig):
 
     use_gpu = cfg.general.gpus > 0 and torch.cuda.is_available()
     trainer = Trainer(gradient_clip_val=cfg.train.clip_grad,
-                      strategy="ddp",  # Needed to load old checkpoints
+                      strategy="ddp_find_unused_parameters_true",  # Needed to load old checkpoints
                       accelerator='gpu' if use_gpu else 'cpu',
                       devices=cfg.general.gpus if use_gpu else 1,
                       max_epochs=cfg.train.n_epochs,
@@ -231,10 +272,17 @@ def main(cfg: DictConfig):
                       log_every_n_steps=50 if name != 'debug' else 1,
                       logger=loggers)
 
+    apply_encoder_finetuning(model, cfg.general.encoder_finetune_strategy)
+    apply_decoder_finetuning(model, cfg.general.decoder_finetune_strategy)
+
+    if cfg.general.load_weights is not None:
+        logging.info(f"Loading weights from {cfg.general.load_weights}")
+        model = load_weights(model, cfg.general.load_weights)
+
     if not cfg.general.test_only:
         trainer.fit(model, datamodule=datamodule, ckpt_path=cfg.general.resume)
         if cfg.general.name not in ['debug', 'test']:
-            trainer.test(model, datamodule=datamodule)
+            trainer.test(model, datamodule=datamodule, ckpt_path=cfg.general.checkpoint_strategy)
     else:
         # Start by evaluating test_only_path
         trainer.test(model, datamodule=datamodule, ckpt_path=cfg.general.test_only)

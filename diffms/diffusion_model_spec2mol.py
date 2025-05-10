@@ -1,8 +1,8 @@
 import os
 import time
 import logging
-from collections import Counter, OrderedDict
 import pickle
+import math
 
 import torch
 import torch.nn as nn
@@ -13,17 +13,18 @@ from rdkit import Chem
 from rdkit.Chem import AllChem
 from tqdm import tqdm
 
-from models.transformer_model import GraphTransformer, GraphTransformerV2
+from models.transformer_model import GraphTransformer
 from diffusion.noise_schedule import DiscreteUniformTransition, PredefinedNoiseScheduleDiscrete,\
     MarginalUniformTransition
-from src.diffusion import diffusion_utils
-from metrics.train_metrics import TrainLossDiscrete, CrossEntropyMetric
-from metrics.abstract_metrics import SumExceptBatchMetric, SumExceptBatchKL, NLL
-from src.metrics.diffms_metrics import K_ACC_Collection, K_SimilarityCollection, Validity
-from src import utils
+from diffms.diffusion import diffusion_utils
+from metrics.train_metrics import TrainLossDiscrete
+from metrics.abstract_metrics import SumExceptBatchMetric, SumExceptBatchKL, NLL, CrossEntropyMetric
+from diffms.metrics.diffms_metrics import K_ACC_Collection, K_SimilarityCollection, Validity
+from diffms import utils
+from diffms.mist.models.spectra_encoder import SpectraEncoderGrowing
 
 
-class FP2MolDenoisingDiffusion(pl.LightningModule):
+class Spec2MolDenoisingDiffusion(pl.LightningModule):
     def __init__(self, cfg, dataset_infos, train_metrics, visualization_tools, extra_features,
                  domain_features):
         super().__init__()
@@ -34,7 +35,7 @@ class FP2MolDenoisingDiffusion(pl.LightningModule):
 
         self.cfg = cfg
         self.name = cfg.general.name
-        self.model_dtype = torch.float32
+        self.decoder_dtype = torch.float32
         self.T = cfg.model.diffusion_steps
         self.val_num_samples = cfg.general.val_samples_to_generate
         self.test_num_samples = cfg.general.test_samples_to_generate
@@ -61,7 +62,6 @@ class FP2MolDenoisingDiffusion(pl.LightningModule):
         self.val_validity = Validity()
         self.val_CE = CrossEntropyMetric()
 
-
         self.test_nll = NLL()
         self.test_X_kl = SumExceptBatchKL()
         self.test_E_kl = SumExceptBatchKL()
@@ -78,32 +78,83 @@ class FP2MolDenoisingDiffusion(pl.LightningModule):
         self.extra_features = extra_features
         self.domain_features = domain_features
 
-        if self.cfg.model.model == 'graph_tf':
-            self.model = GraphTransformer(n_layers=cfg.model.n_layers,
-                                        input_dims=input_dims,
-                                        hidden_mlp_dims=cfg.model.hidden_mlp_dims,
-                                        hidden_dims=cfg.model.hidden_dims,
-                                        output_dims=output_dims,
-                                        act_fn_in=nn.ReLU(),
-                                        act_fn_out=nn.ReLU())
-        elif self.cfg.model.model == 'graph_tf_v2':
-            self.model = GraphTransformerV2(
-                n_layers=cfg.model.n_layers,
-                input_dims=input_dims,
-                hidden_mlp_dims=cfg.model.hidden_mlp_dims,
-                hidden_dims=cfg.model.hidden_dims,
-                output_dims=output_dims,
-                act_fn_in=nn.ReLU(),
-                act_fn_out=nn.ReLU(),
-                y_encoder_fp_dim=cfg.dataset.morgan_nbits,
-                y_encoder_n_heads=cfg.model.graph_tf_y_transformer_n_heads,
-                y_encoder_transformer_ff_dim=cfg.model.graph_tf_y_transformer_ff_dim,
-                y_encoder_num_layers=cfg.model.graph_tf_y_transformer_n_layers,
-                y_encoder_dropout=cfg.model.graph_tf_y_transformer_dropout,         
-            )
+        self.decoder = GraphTransformer(n_layers=cfg.model.n_layers,
+                                      input_dims=input_dims,
+                                      hidden_mlp_dims=cfg.model.hidden_mlp_dims,
+                                      hidden_dims=cfg.model.hidden_dims,
+                                      output_dims=output_dims,
+                                      act_fn_in=nn.ReLU(),
+                                      act_fn_out=nn.ReLU())
+
+        try:
+            if cfg.general.decoder is not None:
+                state_dict = torch.load(cfg.general.decoder, map_location='cpu')
+                if 'state_dict' in state_dict:
+                    state_dict = state_dict['state_dict']
+                    
+                cleaned_state_dict = {}
+                for k, v in state_dict.items():
+                    if k.startswith('model.'):
+                        k = k[6:]
+                        cleaned_state_dict[k] = v
+
+                self.decoder.load_state_dict(cleaned_state_dict)
+        except Exception as e:
+            logging.info(f"Could not load decoder: {e}")
+
+        hidden_size = 256
+        try:
+            hidden_size = cfg.model.encoder_hidden_dim
+        except:
+            print("No hidden size specified, using default value of 256")
+
+        magma_modulo = 512
+        try:
+            magma_modulo = cfg.model.encoder_magma_modulo
+        except:
+            print("No magma modulo specified, using default value of 512")
         
+        self.encoder = SpectraEncoderGrowing(
+                        inten_transform='float',
+                        inten_prob=0.1,
+                        remove_prob=0.5,
+                        peak_attn_layers=2,
+                        num_heads=8,
+                        pairwise_featurization=True,
+                        embed_instrument=False,
+                        cls_type='ms1',
+                        set_pooling='cls',
+                        spec_features='peakformula',
+                        mol_features='fingerprint',
+                        form_embedder='pos-cos',
+                        output_size=4096,
+                        hidden_size=hidden_size,
+                        spectra_dropout=0.1,
+                        top_layers=1,
+                        refine_layers=4,
+                        magma_modulo=magma_modulo,
+                    )
+        
+        try:
+            if cfg.general.encoder is not None:
+                self.encoder.load_state_dict(torch.load(cfg.general.encoder), strict=True)
+        except Exception as e:
+            logging.info(f"Could not load encoder: {e}")
+
         self.noise_schedule = PredefinedNoiseScheduleDiscrete(cfg.model.diffusion_noise_schedule, timesteps=cfg.model.diffusion_steps)
-        self.denoise_nodes = getattr(cfg.dataset, 'denoise_nodes', True)
+        self.denoise_nodes = getattr(cfg.dataset, 'denoise_nodes', False)
+        self.merge = getattr(cfg.dataset, 'merge', 'none')
+
+        if self.merge == 'merge-encoder_output-linear':
+            self.merge_function = nn.Linear(hidden_size, cfg.dataset.morgan_nbits)
+        elif self.merge == 'merge-encoder_output-mlp':
+            self.merge_function = nn.Sequential(
+                nn.Linear(hidden_size, 1024),
+                nn.SiLU(),
+                nn.Linear(1024, cfg.dataset.morgan_nbits)
+            )
+        elif self.merge == 'downproject_4096':
+            self.merge_function = nn.Linear(4096, cfg.dataset.morgan_nbits)
 
         if cfg.model.transition == 'uniform':
             self.transition_model = DiscreteUniformTransition(x_classes=self.Xdim_output, e_classes=self.Edim_output,
@@ -133,10 +184,21 @@ class FP2MolDenoisingDiffusion(pl.LightningModule):
         self.best_val_nll = 1e8
         self.val_counter = 1
 
-    def training_step(self, data, i):
-        if data.edge_index.numel() == 0:
-            logging.info("Found a batch with no edges. Skipping.")
-            return
+    def training_step(self, batch, i):
+        output, aux = self.encoder(batch)
+
+        data = batch["graph"]
+        if self.merge == 'mist_fp':
+            data.y = aux["int_preds"][-1]
+        if self.merge == 'merge-encoder_output-linear':
+            encoder_output = aux['h0']
+            data.y = self.merge_function(encoder_output)
+        elif self.merge == 'merge-encoder_output-mlp':
+            encoder_output = aux['h0']
+            data.y = self.merge_function(encoder_output)
+        elif self.merge == 'downproject_4096':
+            data.y = self.merge_function(output)
+
         dense_data, node_mask = utils.to_dense(data.x, data.edge_index, data.edge_attr, data.batch)
         dense_data = dense_data.mask(node_mask)
         X, E = dense_data.X, dense_data.E
@@ -147,7 +209,7 @@ class FP2MolDenoisingDiffusion(pl.LightningModule):
         loss = self.train_loss(masked_pred_X=pred.X, masked_pred_E=pred.E, pred_y=pred.y,
                                true_X=X, true_E=E, true_y=data.y,
                                log=False)
-        
+ 
         self.train_metrics(masked_pred_X=pred.X, masked_pred_E=pred.E, true_X=X, true_E=E,
                            log=False)
 
@@ -182,7 +244,6 @@ class FP2MolDenoisingDiffusion(pl.LightningModule):
 
     def on_train_epoch_end(self) -> None:
         to_log = self.train_loss.log_epoch_metrics()
-        
         to_log["train_epoch/epoch"] = float(self.current_epoch)
         to_log["train_epoch/time"] = time.time() - self.start_epoch_time
 
@@ -207,7 +268,22 @@ class FP2MolDenoisingDiffusion(pl.LightningModule):
         self.val_CE.reset()
         self.val_counter += 1
 
-    def validation_step(self, data, i):
+    def validation_step(self, batch, i):
+        output, aux = self.encoder(batch)
+
+        data = batch["graph"]
+        if self.merge == 'mist_fp':
+            data.y = aux["int_preds"][-1]
+        if self.merge == 'merge-encoder_output-linear':
+            encoder_output = aux['h0']
+            data.y = self.merge_function(encoder_output)
+        elif self.merge == 'merge-encoder_output-mlp':
+            encoder_output = aux['h0']
+            data.y = self.merge_function(encoder_output)
+        elif self.merge == 'downproject_4096':
+            data.y = self.merge_function(output)
+
+
         dense_data, node_mask = utils.to_dense(data.x, data.edge_index, data.edge_attr, data.batch)
         dense_data = dense_data.mask(node_mask)
         noisy_data = self.apply_noise(dense_data.X, dense_data.E, data.y, node_mask)
@@ -228,7 +304,7 @@ class FP2MolDenoisingDiffusion(pl.LightningModule):
 
         self.val_CE(flat_pred_E, flat_true_E)
 
-        if self.val_counter % self.cfg.general.sample_every_val == 0 and i < 5:
+        if self.val_counter % self.cfg.general.sample_every_val == 0:
             true_mols = [Chem.inchi.MolFromInchi(data.get_example(idx).inchi) for idx in range(len(data))] # Is this correct?
             predicted_mols = [list() for _ in range(len(data))]
             for _ in range(self.val_num_samples):
@@ -276,11 +352,7 @@ class FP2MolDenoisingDiffusion(pl.LightningModule):
             self.best_val_nll = val_nll
         logging.info(f"Val NLL: {val_nll :.4f} \t Best Val NLL:  {self.best_val_nll}")
 
-        # save self.model to models/graph_transformer_{epoch}.pt
-        torch.save(self.model.state_dict(), f"models/graph_transformer_{self.current_epoch}.pt")
-        with open(f"models/graph_transformer_{self.current_epoch}.pkl", "wb") as f:
-            pickle.dump(self.model, f)
-
+    
     def on_test_epoch_start(self) -> None:
         logging.info("Starting test...")
         self.test_nll.reset()
@@ -292,13 +364,27 @@ class FP2MolDenoisingDiffusion(pl.LightningModule):
         self.test_sim_metrics.reset()
         self.test_validity.reset()
         self.test_CE.reset()
-             
 
-    def test_step(self, data, i):
+    def test_step(self, batch, i):
+        output, aux = self.encoder(batch)
+
+        data = batch["graph"]
+        if self.merge == 'mist_fp':
+            data.y = aux["int_preds"][-1]
+        if self.merge == 'merge-encoder_output-linear':
+            encoder_output = aux['h0']
+            data.y = self.merge_function(encoder_output)
+        elif self.merge == 'merge-encoder_output-mlp':
+            encoder_output = aux['h0']
+            data.y = self.merge_function(encoder_output)
+        elif self.merge == 'downproject_4096':
+            data.y = self.merge_function(output)
+
         dense_data, node_mask = utils.to_dense(data.x, data.edge_index, data.edge_attr, data.batch)
         dense_data = dense_data.mask(node_mask)
         noisy_data = self.apply_noise(dense_data.X, dense_data.E, data.y, node_mask)
         extra_data = self.compute_extra_data(noisy_data)
+
         pred = self.forward(noisy_data, extra_data, node_mask)
         pred.X = dense_data.X
         pred.Y = data.y
@@ -314,21 +400,23 @@ class FP2MolDenoisingDiffusion(pl.LightningModule):
 
         self.test_CE(flat_pred_E, flat_true_E)
 
-        true_mols = [Chem.inchi.MolFromInchi(data.get_example(idx).inchi) for idx in range(len(data))] # Is this correct?
-        predicted_mols = [list() for _ in range(len(data))]
-        for _ in range(self.test_num_samples):
-            for idx, mol in enumerate(self.sample_batch(data)):
-                predicted_mols[idx].append(mol)
+        if i <= math.ceil(self.cfg.general.num_test_samples / self.cfg.train.eval_batch_size):
+            true_mols = [Chem.inchi.MolFromInchi(data.get_example(idx).inchi) for idx in range(len(data))] # Is this correct?
+            predicted_mols = [list() for _ in range(len(data))]
 
-        with open(f"preds/{self.name}_pred_{i}.pkl", "wb") as f:
-            pickle.dump(predicted_mols, f)
-        with open(f"preds/{self.name}_true_{i}.pkl", "wb") as f:
-            pickle.dump(true_mols, f)
+            for _ in range(self.test_num_samples):
+                for idx, mol in enumerate(self.sample_batch(data)):
+                    predicted_mols[idx].append(mol)
+
+            with open(f"preds/{self.name}_pred_{i}.pkl", "wb") as f:
+                pickle.dump(predicted_mols, f)
+            with open(f"preds/{self.name}_true_{i}.pkl", "wb") as f:
+                pickle.dump(true_mols, f)
         
-        for idx in range(len(data)): # WARNING: THESE METRICS MAY FAIL ON MULTI-GPU
-            self.test_k_acc.update(predicted_mols[idx], true_mols[idx])
-            self.test_sim_metrics.update(predicted_mols[idx], true_mols[idx])
-            self.test_validity.update(predicted_mols[idx])
+            for idx in range(len(data)):
+                self.test_k_acc.update(predicted_mols[idx], true_mols[idx])
+                self.test_sim_metrics.update(predicted_mols[idx], true_mols[idx])
+                self.test_validity.update(predicted_mols[idx])
 
         return {'loss': nll}
 
@@ -362,7 +450,7 @@ class FP2MolDenoisingDiffusion(pl.LightningModule):
             log_dict[f"test/{key}"] = value
         log_dict["test/validity"] = self.test_validity.compute()
 
-        self.log_dict(log_dict, sync_dist=True)        
+        self.log_dict(log_dict, sync_dist=True)
         
         
     def kl_prior(self, X, E, node_mask):
@@ -513,7 +601,7 @@ class FP2MolDenoisingDiffusion(pl.LightningModule):
            X, E, y : (bs, n, dx),  (bs, n, n, de), (bs, dy)
            node_mask : (bs, n)
            Output: nll (size 1)
-       """
+        """
         t = noisy_data['t']
 
         # 1.
@@ -548,35 +636,34 @@ class FP2MolDenoisingDiffusion(pl.LightningModule):
         X = torch.cat((noisy_data['X_t'], extra_data.X), dim=2).float()
         E = torch.cat((noisy_data['E_t'], extra_data.E), dim=3).float()
         y = torch.hstack((noisy_data['y_t'], extra_data.y)).float()
-        return self.model(X, E, y, node_mask)
+        return self.decoder(X, E, y, node_mask)
     
     @torch.no_grad()
-    def sample_batch(self, batch: Batch) -> Batch:
-        dense_data, node_mask = utils.to_dense(batch.x, batch.edge_index, batch.edge_attr, batch.batch)
+    def sample_batch(self, data: Batch) -> Batch:
+        dense_data, node_mask = utils.to_dense(data.x, data.edge_index, data.edge_attr, data.batch)
 
         z_T = diffusion_utils.sample_discrete_feature_noise(limit_dist=self.limit_dist, node_mask=node_mask)
-        X, E, y = dense_data.X, z_T.E, batch.y
+        X, E, y = dense_data.X, z_T.E, data.y
 
         assert (E == torch.transpose(E, 1, 2)).all()
 
         # Iteratively sample p(z_s | z_t) for t = 1, ..., T, with s = t - 1.
-        for s_int in tqdm(reversed(range(0, self.T)), desc='Sampling', leave=False):
-            s_array = s_int * torch.ones((len(batch), 1), dtype=torch.float32, device=self.device)
+        for s_int in tqdm(reversed(range(0, self.T)), leave=False):
+            s_array = s_int * torch.ones((len(data), 1), dtype=torch.float32, device=self.device)
             t_array = s_array + 1
             s_norm = s_array / self.T
             t_norm = t_array / self.T
 
             # Sample z_s
             sampled_s, __ = self.sample_p_zs_given_zt(s_norm, t_norm, X, E, y, node_mask)
-            _, E, y = sampled_s.X, sampled_s.E, batch.y
+            _, E, y = sampled_s.X, sampled_s.E, data.y
 
         # Sample
         sampled_s.X = X
         sampled_s = sampled_s.mask(node_mask, collapse=True)
-        X, E, y = sampled_s.X, sampled_s.E, batch.y
+        X, E, y = sampled_s.X, sampled_s.E, data.y
 
         mols = []
-
         for nodes, adj_mat in zip(X, E):
             mols.append(self.visualization_tools.mol_from_graphs(nodes, adj_mat))
 

@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from torchmetrics import MeanSquaredError
 import wandb
-from src.metrics.abstract_metrics import CrossEntropyMetric 
+from diffms.metrics.abstract_metrics import CrossEntropyMetric 
 
 class TrainLossDiscrete(nn.Module):
     """ Train with Cross entropy"""

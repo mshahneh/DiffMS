@@ -39,6 +39,6 @@ readme = "README.md"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["src"]
+include = ["diffms"]
 exclude = []
 namespaces = false

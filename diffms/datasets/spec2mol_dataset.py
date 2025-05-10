@@ -15,11 +15,11 @@ import torch.nn.functional as F
 from torch_geometric.data import Data, InMemoryDataset, download_url
 from rdkit.Chem.AllChem import GetMorganFingerprintAsBitVect
 
-from src.mist.data import datasets, splitter, featurizers
-from src.datasets.abstract_dataset import AbstractDatasetInfos, MolecularDataModule
-import src.utils as utils
-from src.mist.data.datasets import get_paired_loader_graph
-from src.datasets.abstract_dataset import ATOM_TO_VALENCY, ATOM_TO_WEIGHT
+from diffms.mist.data import datasets, splitter, featurizers
+from diffms.datasets.abstract_dataset import AbstractDatasetInfos, MolecularDataModule
+import diffms.utils as utils
+from diffms.mist.data.datasets import get_paired_loader_graph
+from diffms.datasets.abstract_dataset import ATOM_TO_VALENCY, ATOM_TO_WEIGHT
 
 def to_list(value: Any) -> Sequence:
     if isinstance(value, Sequence) and not isinstance(value, str):

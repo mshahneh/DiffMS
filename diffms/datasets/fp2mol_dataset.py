@@ -15,10 +15,10 @@ from rdkit.Chem.AllChem import GetMorganFingerprintAsBitVect
 from joblib import Parallel, delayed
 from tqdm_joblib import tqdm_joblib
 
-from src import utils
-from src.analysis.rdkit_functions import mol2smiles, build_molecule_with_partial_charges, compute_molecular_metrics
-from src.datasets.abstract_dataset import AbstractDatasetInfos, MolecularDataModule
-from src.datasets.abstract_dataset import ATOM_TO_VALENCY, ATOM_TO_WEIGHT
+from diffms import utils
+from diffms.analysis.rdkit_functions import mol2smiles, build_molecule_with_partial_charges, compute_molecular_metrics
+from diffms.datasets.abstract_dataset import AbstractDatasetInfos, MolecularDataModule
+from diffms.datasets.abstract_dataset import ATOM_TO_VALENCY, ATOM_TO_WEIGHT
 
 def to_list(value: Any) -> Sequence:
     if isinstance(value, Sequence) and not isinstance(value, str):

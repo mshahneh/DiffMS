@@ -8,7 +8,7 @@ from rdkit import Chem
 from rdkit.Chem import AllChem
 from rdkit.Chem import DataStructs
 
-from src.utils import is_valid, canonical_mol_from_inchi
+from diffms.utils import is_valid, canonical_mol_from_inchi
 
 class K_ACC:
     def __init__(self, k: int):

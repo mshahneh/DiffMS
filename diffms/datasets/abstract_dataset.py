@@ -6,8 +6,8 @@ from torch_geometric.data import Dataset
 from torch_geometric.loader import DataLoader
 from torch_geometric.data.lightning import LightningDataset
 
-import src.utils as utils
-from src.diffusion.distributions import DistributionNodes
+import diffms.utils as utils
+from diffms.diffusion.distributions import DistributionNodes
 
 def kwargs_repr(**kwargs) -> str:
     return ', '.join([f'{k}={v}' for k, v in kwargs.items() if v is not None])
