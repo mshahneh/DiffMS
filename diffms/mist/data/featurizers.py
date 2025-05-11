@@ -24,8 +24,8 @@ from rdkit.Chem import AllChem, DataStructs
 from rdkit.Chem.AllChem import GetMorganFingerprintAsBitVect
 from rdkit.Chem.rdMolDescriptors import GetMACCSKeysFingerprint
 
-from .. import utils
-from . import data
+from diffms.mist import utils
+from diffms.mist.data import data
 
 ATOM_DECODER = ['C', 'O', 'P', 'N', 'S', 'Cl', 'F', 'H']
 TYPES = {atom: i for i, atom in enumerate(ATOM_DECODER)}
