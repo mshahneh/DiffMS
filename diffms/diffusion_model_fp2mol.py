@@ -13,12 +13,12 @@ from rdkit import Chem
 from rdkit.Chem import AllChem
 from tqdm import tqdm
 
-from models.transformer_model import GraphTransformer, GraphTransformerV2
-from diffusion.noise_schedule import DiscreteUniformTransition, PredefinedNoiseScheduleDiscrete,\
+from diffms.models.transformer_model import GraphTransformer, GraphTransformerV2
+from diffms.diffusion.noise_schedule import DiscreteUniformTransition, PredefinedNoiseScheduleDiscrete,\
     MarginalUniformTransition
 from diffms.diffusion import diffusion_utils
-from metrics.train_metrics import TrainLossDiscrete, CrossEntropyMetric
-from metrics.abstract_metrics import SumExceptBatchMetric, SumExceptBatchKL, NLL
+from diffms.metrics.train_metrics import TrainLossDiscrete, CrossEntropyMetric
+from diffms.metrics.abstract_metrics import SumExceptBatchMetric, SumExceptBatchKL, NLL
 from diffms.metrics.diffms_metrics import K_ACC_Collection, K_SimilarityCollection, Validity
 from diffms import utils
 
@@ -127,8 +127,8 @@ class FP2MolDenoisingDiffusion(pl.LightningModule):
 
         self.save_hyperparameters(ignore=['train_metrics', 'sampling_metrics'])
         self.start_epoch_time = None
-        self.train_iterations = None
-        self.val_iterations = None
+        # self.train_iterations = None
+        # self.val_iterations = None
         self.log_every_steps = cfg.general.log_every_steps
         self.best_val_nll = 1e8
         self.val_counter = 1
@@ -141,8 +141,7 @@ class FP2MolDenoisingDiffusion(pl.LightningModule):
         dense_data = dense_data.mask(node_mask)
         X, E = dense_data.X, dense_data.E
         noisy_data = self.apply_noise(X, E, data.y, node_mask)
-        extra_data = self.compute_extra_data(noisy_data)
-        pred = self.forward(noisy_data, extra_data, node_mask)
+        pred = self.forward(noisy_data)
 
         loss = self.train_loss(masked_pred_X=pred.X, masked_pred_E=pred.E, pred_y=pred.y,
                                true_X=X, true_E=E, true_y=data.y,
@@ -150,7 +149,8 @@ class FP2MolDenoisingDiffusion(pl.LightningModule):
         
         self.train_metrics(masked_pred_X=pred.X, masked_pred_E=pred.E, true_X=X, true_E=E,
                            log=False)
-
+        
+        self.log('train/loss', loss, on_step=True, on_epoch=True, prog_bar=True, logger=True, batch_size=X.size(0))
         return {'loss': loss}
 
     def configure_optimizers(self):
@@ -171,9 +171,9 @@ class FP2MolDenoisingDiffusion(pl.LightningModule):
         else:
             raise ValueError('Unknown Scheduler')
 
-    def on_fit_start(self) -> None:
-        self.train_iterations = len(self.trainer.datamodule.train_dataloader())
-        logging.info(f"Size of the input features: X-{self.Xdim}, E-{self.Edim}, y-{self.ydim}")
+    # def on_fit_start(self) -> None:
+    #     self.train_iterations = len(self.trainer.datamodule.train_dataloader())
+    #     logging.info(f"Size of the input features: X-{self.Xdim}, E-{self.Edim}, y-{self.ydim}")
         
     def on_train_epoch_start(self) -> None:
         self.start_epoch_time = time.time()
@@ -211,9 +211,8 @@ class FP2MolDenoisingDiffusion(pl.LightningModule):
         dense_data, node_mask = utils.to_dense(data.x, data.edge_index, data.edge_attr, data.batch)
         dense_data = dense_data.mask(node_mask)
         noisy_data = self.apply_noise(dense_data.X, dense_data.E, data.y, node_mask)
-        extra_data = self.compute_extra_data(noisy_data)
 
-        pred = self.forward(noisy_data, extra_data, node_mask)
+        pred = self.forward(noisy_data)
         pred.X = dense_data.X
         pred.Y = data.y
 
@@ -299,7 +298,7 @@ class FP2MolDenoisingDiffusion(pl.LightningModule):
         dense_data = dense_data.mask(node_mask)
         noisy_data = self.apply_noise(dense_data.X, dense_data.E, data.y, node_mask)
         extra_data = self.compute_extra_data(noisy_data)
-        pred = self.forward(noisy_data, extra_data, node_mask)
+        pred = self.forward(noisy_data)#, extra_data, node_mask)
         pred.X = dense_data.X
         pred.Y = data.y
 
@@ -365,7 +364,7 @@ class FP2MolDenoisingDiffusion(pl.LightningModule):
         self.log_dict(log_dict, sync_dist=True)        
         
         
-    def kl_prior(self, X, E, node_mask):
+    def kl_prior(self, X, E, node_mask, **kwargs):
         """Computes the KL between q(z1 | x) and the prior p(z1) = Normal(0, 1).
 
         This is essentially a lot of work for something that is in practice negligible in the loss. However, you
@@ -400,7 +399,7 @@ class FP2MolDenoisingDiffusion(pl.LightningModule):
         return diffusion_utils.sum_except_batch(kl_distance_X) + \
                diffusion_utils.sum_except_batch(kl_distance_E)
 
-    def compute_Lt(self, X, E, y, pred, noisy_data, node_mask, test):
+    def compute_Lt(self, X, E, y, pred, noisy_data, node_mask, test, **kwargs):
         pred_probs_X = F.softmax(pred.X, dim=-1)
         pred_probs_E = F.softmax(pred.E, dim=-1)
         pred_probs_y = F.softmax(pred.y, dim=-1)
@@ -429,7 +428,7 @@ class FP2MolDenoisingDiffusion(pl.LightningModule):
         kl_e = (self.test_E_kl if test else self.val_E_kl)(prob_true.E, torch.log(prob_pred.E))
         return self.T * (kl_x + kl_e)
 
-    def reconstruction_logp(self, t, X, E, y, node_mask):
+    def reconstruction_logp(self, t, X, E, y, node_mask,  **kwargs):
         # Compute noise values for t = 0.
         t_zeros = torch.zeros_like(t)
         beta_0 = self.noise_schedule(t_zeros)
@@ -450,8 +449,7 @@ class FP2MolDenoisingDiffusion(pl.LightningModule):
         # Predictions
         noisy_data = {'X_t': sampled_0.X, 'E_t': sampled_0.E, 'y_t': sampled_0.y, 'node_mask': node_mask,
                       't': torch.zeros(X0.shape[0], 1).type_as(y0)}
-        extra_data = self.compute_extra_data(noisy_data)
-        pred0 = self.forward(noisy_data, extra_data, node_mask)
+        pred0 = self.forward(noisy_data, **kwargs)
 
         # Normalize predictions
         probX0 = F.softmax(pred0.X, dim=-1)
@@ -506,7 +504,7 @@ class FP2MolDenoisingDiffusion(pl.LightningModule):
                       'alpha_t_bar': alpha_t_bar, 'X_t': z_t.X, 'E_t': z_t.E, 'y_t': z_t.y, 'node_mask': node_mask}
         return noisy_data
 
-    def compute_val_loss(self, pred, noisy_data, X, E, y, node_mask, test=False):
+    def compute_val_loss(self, pred, noisy_data, X, E, y, node_mask, test=False,  **kwargs):
         """Computes an estimator for the variational lower bound.
            pred: (batch_size, n, total_features)
            noisy_data: dict
@@ -514,6 +512,8 @@ class FP2MolDenoisingDiffusion(pl.LightningModule):
            node_mask : (bs, n)
            Output: nll (size 1)
        """
+       
+        
         t = noisy_data['t']
 
         # 1.
@@ -521,14 +521,14 @@ class FP2MolDenoisingDiffusion(pl.LightningModule):
         log_pN = self.node_dist.log_prob(N)
 
         # 2. The KL between q(z_T | x) and p(z_T) = Uniform(1/num_classes). Should be close to zero.
-        kl_prior = self.kl_prior(X, E, node_mask)
+        kl_prior = self.kl_prior(X, E, node_mask,  **kwargs)
 
         # 3. Diffusion loss
-        loss_all_t = self.compute_Lt(X, E, y, pred, noisy_data, node_mask, test)
+        loss_all_t = self.compute_Lt(X, E, y, pred, noisy_data, node_mask, test,  **kwargs)
 
         # 4. Reconstruction loss
         # Compute L0 term : -log p (X, E, y | z_0) = reconstruction loss
-        prob0 = self.reconstruction_logp(t, X, E, y, node_mask)
+        prob0 = self.reconstruction_logp(t, X, E, y, node_mask, **kwargs)
 
         loss_term_0 = self.val_X_logp(X * prob0.X.log()) + self.val_E_logp(E * prob0.E.log())
 
@@ -544,7 +544,9 @@ class FP2MolDenoisingDiffusion(pl.LightningModule):
 
         return nll
 
-    def forward(self, noisy_data, extra_data, node_mask):
+    def forward(self, noisy_data, **kwargs):
+        extra_data = self.compute_extra_data(noisy_data)
+        node_mask = noisy_data['node_mask']
         X = torch.cat((noisy_data['X_t'], extra_data.X), dim=2).float()
         E = torch.cat((noisy_data['E_t'], extra_data.E), dim=3).float()
         y = torch.hstack((noisy_data['y_t'], extra_data.y)).float()
@@ -582,7 +584,7 @@ class FP2MolDenoisingDiffusion(pl.LightningModule):
 
         return mols
 
-    def sample_p_zs_given_zt(self, s, t, X_t, E_t, y_t, node_mask):
+    def sample_p_zs_given_zt(self, s, t, X_t, E_t, y_t, node_mask, **kwargs):
         """Samples from zs ~ p(zs | zt). Only used during sampling.
            if last_step, return the graph prediction as well"""
         bs, n, dxs = X_t.shape
@@ -597,8 +599,8 @@ class FP2MolDenoisingDiffusion(pl.LightningModule):
 
         # Neural net predictions
         noisy_data = {'X_t': X_t, 'E_t': E_t, 'y_t': y_t, 't': t, 'node_mask': node_mask}
-        extra_data = self.compute_extra_data(noisy_data)
-        pred = self.forward(noisy_data, extra_data, node_mask)
+
+        pred = self.forward(noisy_data, **kwargs)
 
         # Normalize predictions
         pred_X = F.softmax(pred.X, dim=-1)               # bs, n, d0
