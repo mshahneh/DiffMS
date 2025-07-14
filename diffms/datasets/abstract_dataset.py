@@ -1,7 +1,8 @@
 import copy
 
 import torch
-import pytorch_lightning as pl
+# import pytorch_lightning as pl
+import lightning.pytorch as pl
 from torch_geometric.data import Dataset
 from torch_geometric.loader import DataLoader
 from torch_geometric.data.lightning import LightningDataset
@@ -12,51 +13,35 @@ from diffms.diffusion.distributions import DistributionNodes
 def kwargs_repr(**kwargs) -> str:
     return ', '.join([f'{k}={v}' for k, v in kwargs.items() if v is not None])
 
-class CustomLightningDataset(LightningDataset):
+class CustomLightningDataset(pl.LightningDataModule):
     def __init__(self, cfg, datasets, **kwargs):
-        kwargs.pop('batch_size', None)
-        self.kwargs = kwargs
+        super().__init__()
+        self.cfg = cfg
+        self.train_dataset = datasets['train']
+        self.val_dataset = datasets['val']
+        self.test_dataset = datasets['test']
+        self.pred_dataset = datasets.get('predict', self.test_dataset)
 
-        self.batch_size = cfg.train.batch_size if 'debug' not in cfg.general.name else 2
-        self.eval_batch_size = cfg.train.eval_batch_size if 'debug' not in cfg.general.name else 1
+        self.batch_size = cfg.train.batch_size
+        self.eval_batch_size = cfg.train.eval_batch_size
 
-        super().__init__(train_dataset=datasets['train'], val_dataset=datasets['val'], test_dataset=datasets['test'],)
-        for k, v in kwargs.items(): # overwrite default kwargs from LightningDataset
-            self.kwargs[k] = v
-        self.kwargs.pop('batch_size', None)
+        self.kwargs = {k: v for k, v in kwargs.items() if k not in ['batch_size', 'sampler', 'batch_sampler']}
 
-    def dataloader(self, dataset: Dataset, **kwargs) -> DataLoader:
-        return DataLoader(dataset, **kwargs)
+    def dataloader(self, dataset, shuffle=False, batch_size=None):
+        return DataLoader(dataset, shuffle=shuffle, batch_size=batch_size, **self.kwargs)
 
-    def train_dataloader(self) -> DataLoader:
-        from torch.utils.data import IterableDataset
+    def train_dataloader(self):
+        return self.dataloader(self.train_dataset, shuffle=True, batch_size=self.batch_size)
 
-        shuffle = not isinstance(self.train_dataset, IterableDataset)
-        shuffle &= self.kwargs.get('sampler', None) is None
-        shuffle &= self.kwargs.get('batch_sampler', None) is None
-        return self.dataloader(self.train_dataset, shuffle=shuffle, batch_size=self.batch_size, **self.kwargs)
+    def val_dataloader(self):
+        return self.dataloader(self.val_dataset, shuffle=True, batch_size=self.eval_batch_size)
 
-    def val_dataloader(self) -> DataLoader:
-        kwargs = copy.copy(self.kwargs)
-        kwargs.pop('sampler', None)
-        kwargs.pop('batch_sampler', None)
+    def test_dataloader(self):
+        return self.dataloader(self.test_dataset, shuffle=False, batch_size=self.eval_batch_size)
 
-        return self.dataloader(self.val_dataset, shuffle=True, batch_size=self.eval_batch_size, **kwargs)
-
-    def test_dataloader(self) -> DataLoader:
-        kwargs = copy.copy(self.kwargs)
-        kwargs.pop('sampler', None)
-        kwargs.pop('batch_sampler', None)
-
-        return self.dataloader(self.test_dataset, shuffle=False,  batch_size=self.eval_batch_size, **kwargs)
-
-    def predict_dataloader(self) -> DataLoader:
-        kwargs = copy.copy(self.kwargs)
-        kwargs.pop('sampler', None)
-        kwargs.pop('batch_sampler', None)
-
-        return self.dataloader(self.pred_dataset, shuffle=False,  batch_size=self.eval_batch_size, **kwargs)
-
+    def predict_dataloader(self):
+        return self.dataloader(self.pred_dataset, shuffle=False, batch_size=self.eval_batch_size)
+    
     def __repr__(self) -> str:
         kwargs = kwargs_repr(
             train_dataset=self.train_dataset,

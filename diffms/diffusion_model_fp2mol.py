@@ -7,7 +7,8 @@ import pickle
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import pytorch_lightning as pl
+# import pytorch_lightning as pl
+import lightning.pytorch as pl
 from torch_geometric.data import Batch
 from rdkit import Chem
 from rdkit.Chem import AllChem
@@ -33,11 +34,18 @@ class FP2MolDenoisingDiffusion(pl.LightningModule):
         nodes_dist = dataset_infos.nodes_dist
 
         self.cfg = cfg
-        self.name = cfg.general.name
+        try:
+            self.name = cfg.general.name
+        except:
+            self.name = 'default'
         self.model_dtype = torch.float32
         self.T = cfg.model.diffusion_steps
-        self.val_num_samples = cfg.general.val_samples_to_generate
-        self.test_num_samples = cfg.general.test_samples_to_generate
+        try:
+            self.val_num_samples = cfg.general.val_samples_to_generate
+            self.test_num_samples = cfg.general.test_samples_to_generate
+        except:
+            self.val_num_samples = 10
+            self.test_num_samples = 10
 
         self.Xdim = input_dims['X']
         self.Edim = input_dims['E']
@@ -129,7 +137,15 @@ class FP2MolDenoisingDiffusion(pl.LightningModule):
         self.start_epoch_time = None
         # self.train_iterations = None
         # self.val_iterations = None
-        self.log_every_steps = cfg.general.log_every_steps
+        try:
+            self.log_every_steps = cfg.general.log_every_steps
+        except:
+            self.log_every_steps = 50
+            
+        try:
+            self.sample_every_val = cfg.general.sample_every_val
+        except:
+            self.sample_every_val = 10
         self.best_val_nll = 1e8
         self.val_counter = 1
 
@@ -227,7 +243,7 @@ class FP2MolDenoisingDiffusion(pl.LightningModule):
 
         self.val_CE(flat_pred_E, flat_true_E)
 
-        if self.val_counter % self.cfg.general.sample_every_val == 0 and i < 5:
+        if self.val_counter % self.sample_every_val == 0 and i < 5:
             true_mols = [Chem.inchi.MolFromInchi(data.get_example(idx).inchi) for idx in range(len(data))] # Is this correct?
             predicted_mols = [list() for _ in range(len(data))]
             for _ in range(self.val_num_samples):
@@ -260,7 +276,7 @@ class FP2MolDenoisingDiffusion(pl.LightningModule):
             "val/E_CE": metrics[5]
         }
 
-        if self.val_counter % self.cfg.general.sample_every_val == 0:
+        if self.val_counter % self.sample_every_val == 0:
             for key, value in self.val_k_acc.compute().items():
                 log_dict[f"val/{key}"] = value
             for key, value in self.val_sim_metrics.compute().items():
@@ -275,10 +291,10 @@ class FP2MolDenoisingDiffusion(pl.LightningModule):
             self.best_val_nll = val_nll
         logging.info(f"Val NLL: {val_nll :.4f} \t Best Val NLL:  {self.best_val_nll}")
 
-        # save self.model to models/graph_transformer_{epoch}.pt
-        torch.save(self.model.state_dict(), f"models/graph_transformer_{self.current_epoch}.pt")
-        with open(f"models/graph_transformer_{self.current_epoch}.pkl", "wb") as f:
-            pickle.dump(self.model, f)
+        # # save self.model to models/graph_transformer_{epoch}.pt
+        # torch.save(self.model.state_dict(), f"models/graph_transformer_{self.current_epoch}.pt")
+        # with open(f"models/graph_transformer_{self.current_epoch}.pkl", "wb") as f:
+        #     pickle.dump(self.model, f)
 
     def on_test_epoch_start(self) -> None:
         logging.info("Starting test...")
@@ -297,7 +313,7 @@ class FP2MolDenoisingDiffusion(pl.LightningModule):
         dense_data, node_mask = utils.to_dense(data.x, data.edge_index, data.edge_attr, data.batch)
         dense_data = dense_data.mask(node_mask)
         noisy_data = self.apply_noise(dense_data.X, dense_data.E, data.y, node_mask)
-        extra_data = self.compute_extra_data(noisy_data)
+        # extra_data = self.compute_extra_data(noisy_data)
         pred = self.forward(noisy_data)#, extra_data, node_mask)
         pred.X = dense_data.X
         pred.Y = data.y

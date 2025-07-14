@@ -7,7 +7,8 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import pytorch_lightning as pl
+# import pytorch_lightning as pl
+import lightning.pytorch as pl
 from torch_geometric.data import Batch
 from rdkit import Chem
 from rdkit.Chem import AllChem

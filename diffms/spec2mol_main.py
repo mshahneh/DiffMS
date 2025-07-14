@@ -13,10 +13,10 @@ except:
     logging.info("Could not enable float32 matmul precision - medium")
 import hydra
 from omegaconf import DictConfig
-from pytorch_lightning import Trainer
-from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
-from pytorch_lightning.loggers import CSVLogger, WandbLogger
-from pytorch_lightning.utilities.warnings import PossibleUserWarning
+from lightning.pytorch import Trainer
+from lightning.pytorch.callbacks import ModelCheckpoint, LearningRateMonitor
+from lightning.pytorch.loggers import CSVLogger, WandbLogger
+from lightning.pytorch.utilities.warnings import PossibleUserWarning
 
 from diffms import utils
 from diffms.diffusion_model_spec2mol import Spec2MolDenoisingDiffusion

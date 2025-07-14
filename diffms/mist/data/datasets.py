@@ -9,7 +9,8 @@ import numpy as np
 import pandas as pd
 
 import torch
-import pytorch_lightning as pl
+# import pytorch_lightning as pl
+import lightning.pytorch as pl
 from torch.utils.data.dataset import Dataset
 from torch.utils.data import DataLoader
 from tqdm import tqdm

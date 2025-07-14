@@ -209,7 +209,10 @@ class FP2MolDataModule(MolecularDataModule):
         self.filter_dataset = cfg.dataset.filter
         self.train_smiles = []
         self.dataset_name = cfg.dataset.dataset
-        self._root_path = os.path.join(cfg.general.parent_dir, self.datadir, self.dataset_name)
+        try:
+            self._root_path = os.path.join(cfg.general.parent_dir, self.datadir, self.dataset_name)
+        except:
+            self._root_path = os.path.join(self.datadir, self.dataset_name)
         datasets = {'train': FP2MolDataset(stage='train', root=self._root_path, filter_dataset=self.filter_dataset, morgan_r=cfg.dataset.morgan_r, morgan_nBits=cfg.dataset.morgan_nbits, dataset=cfg.dataset.dataset),
                     'val': FP2MolDataset(stage='val', root=self._root_path, filter_dataset=self.filter_dataset, morgan_r=cfg.dataset.morgan_r, morgan_nBits=cfg.dataset.morgan_nbits, dataset=cfg.dataset.dataset),
                     'test': FP2MolDataset(stage='val', root=self._root_path, filter_dataset=self.filter_dataset, morgan_r=cfg.dataset.morgan_r, morgan_nBits=cfg.dataset.morgan_nbits, dataset=cfg.dataset.dataset)}
