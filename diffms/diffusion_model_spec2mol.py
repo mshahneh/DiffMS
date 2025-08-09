@@ -14,12 +14,12 @@ from rdkit import Chem
 from rdkit.Chem import AllChem
 from tqdm import tqdm
 
-from models.transformer_model import GraphTransformer
-from diffusion.noise_schedule import DiscreteUniformTransition, PredefinedNoiseScheduleDiscrete,\
+from diffms.models.transformer_model import GraphTransformer
+from diffms.diffusion.noise_schedule import DiscreteUniformTransition, PredefinedNoiseScheduleDiscrete,\
     MarginalUniformTransition
 from diffms.diffusion import diffusion_utils
-from metrics.train_metrics import TrainLossDiscrete
-from metrics.abstract_metrics import SumExceptBatchMetric, SumExceptBatchKL, NLL, CrossEntropyMetric
+from diffms.metrics.train_metrics import TrainLossDiscrete
+from diffms.metrics.abstract_metrics import SumExceptBatchMetric, SumExceptBatchKL, NLL, CrossEntropyMetric
 from diffms.metrics.diffms_metrics import K_ACC_Collection, K_SimilarityCollection, Validity
 from diffms import utils
 from diffms.mist.models.spectra_encoder import SpectraEncoderGrowing

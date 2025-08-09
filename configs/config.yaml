@@ -4,6 +4,8 @@ defaults:
     - model : model_default
     - train : train_default
     - dataset : fp2mol
+    
+base_data_path: /data/nas-gpu/wang/mzare008/codes/DiffMS/
 
 hydra:
   job:
