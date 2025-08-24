@@ -133,6 +133,13 @@ instrument_to_type.update({
     "FTICR (LCMS)": "fticr",
     "Bruker Q-ToF (LCMS)": "qtof",
     "Orbitrap (LCMS)": "orbitrap",
+    "orbitrap": "orbitrap",
+    "qtof": "qtof",
+    "iontrap": "iontrap",
+    "fticr": "fticr",
+    "Orbitrap": "orbitrap",
+    "QTOF": "qtof",
+    "Q-TOF": "qtof"
 })
 
 instruments = sorted(list(set(instrument_to_type.values())))

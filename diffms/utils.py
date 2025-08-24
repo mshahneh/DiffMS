@@ -186,17 +186,17 @@ def cosine_sim(x: np.ndarray, y: np.ndarray) -> List[float]:
     output = dot_product / (norm_x * norm_y)
     return output
 
-try:
-    from rdkit.Chem.MolStandardize.tautomer import TautomerCanonicalizer, TautomerTransform
-    _RD_TAUTOMER_CANONICALIZER = 'v1'
-    _TAUTOMER_TRANSFORMS = (
-        TautomerTransform('1,3 heteroatom H shift',
-                          '[#7,S,O,Se,Te;!H0]-[#7X2,#6,#15]=[#7,#16,#8,Se,Te]'),
-        TautomerTransform('1,3 (thio)keto/enol r', '[O,S,Se,Te;X2!H0]-[C]=[C]'),
-    )
-except ModuleNotFoundError:
-    from rdkit.Chem.MolStandardize.rdMolStandardize import TautomerEnumerator  # newer rdkit
-    _RD_TAUTOMER_CANONICALIZER = 'v2'
+# try:
+#     from rdkit.Chem.MolStandardize.tautomer import TautomerCanonicalizer, TautomerTransform
+#     _RD_TAUTOMER_CANONICALIZER = 'v1'
+#     _TAUTOMER_TRANSFORMS = (
+#         TautomerTransform('1,3 heteroatom H shift',
+#                           '[#7,S,O,Se,Te;!H0]-[#7X2,#6,#15]=[#7,#16,#8,Se,Te]'),
+#         TautomerTransform('1,3 (thio)keto/enol r', '[O,S,Se,Te;X2!H0]-[C]=[C]'),
+#     )
+# except ModuleNotFoundError:
+from rdkit.Chem.MolStandardize.rdMolStandardize import TautomerEnumerator  # newer rdkit
+_RD_TAUTOMER_CANONICALIZER = 'v2'
 
 def canonical_mol_from_inchi(inchi):
     """Canonicalize mol after Chem.MolFromInchi
@@ -204,11 +204,11 @@ def canonical_mol_from_inchi(inchi):
     mol = Chem.MolFromInchi(inchi)
     if mol is None:
         return None
-    if _RD_TAUTOMER_CANONICALIZER == 'v1':
-        _molvs_t = TautomerCanonicalizer(transforms=_TAUTOMER_TRANSFORMS)
-        mol = _molvs_t.canonicalize(mol)
-    else:
-        _te = TautomerEnumerator()
-        mol = _te.Canonicalize(mol)
+    # if _RD_TAUTOMER_CANONICALIZER == 'v1':
+    #     _molvs_t = TautomerCanonicalizer(transforms=_TAUTOMER_TRANSFORMS)
+    #     mol = _molvs_t.canonicalize(mol)
+    # else:
+    _te = TautomerEnumerator()
+    mol = _te.Canonicalize(mol)
     return mol
 
