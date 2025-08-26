@@ -116,7 +116,10 @@ class Mol(object):
 
         self.inchikey = inchikey
         if self.inchikey is None and self.smiles != "":
-            self.inchikey = Chem.MolToInchiKey(mol)
+            try:
+                self.inchikey = Chem.MolToInchiKey(mol)
+            except:
+                return None
 
         self.mol_formula = mol_formula
         if self.mol_formula is None:

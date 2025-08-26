@@ -405,7 +405,19 @@ def calc_structure_string_type(structure_string):
 def uncharged_formula(mol, mol_type="mol") -> str:
     """Compute uncharged formula"""
     if mol_type == "mol":
-        chem_formula = CalcMolFormula(mol)
+        try:
+            chem_formula = CalcMolFormula(mol)
+        except:
+            try:
+                Chem.SanitizeMol(mol, sanitizeOps=Chem.SanitizeFlags.SANITIZE_ALL ^ Chem.SanitizeFlags.SANITIZE_PROPERTIES)
+                # If this still fails, try kekulizing or adding Hs:
+                mol = Chem.AddHs(mol)
+                Chem.SanitizeMol(mol)
+                Chem.Kekulize(mol)
+                chem_formula = CalcMolFormula(mol)
+            except:
+                return None
+            
     elif mol_type == "smiles":
         mol = Chem.MolFromSmiles(mol)
         if mol is None:
