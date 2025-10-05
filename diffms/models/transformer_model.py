@@ -142,6 +142,8 @@ class NodeEdgeBlock(nn.Module):
         x_mask = node_mask.unsqueeze(-1)        # bs, n, 1
         e_mask1 = x_mask.unsqueeze(2)           # bs, n, 1, 1
         e_mask2 = x_mask.unsqueeze(1)           # bs, 1, n, 1
+        
+        edge_mask = e_mask1 * e_mask2
 
         # 1. Map X to keys and queries
         Q = self.q(X) * x_mask           # (bs, n, dx)
@@ -158,12 +160,12 @@ class NodeEdgeBlock(nn.Module):
         # Compute unnormalized attentions. Y is (bs, n, n, n_head, df)
         Y = Q * K
         Y = Y / math.sqrt(Y.size(-1))
-        diffusion_utils.assert_correctly_masked(Y, (e_mask1 * e_mask2).unsqueeze(-1))
+        diffusion_utils.assert_correctly_masked(Y, edge_mask.unsqueeze(-1))
 
-        E1 = self.e_mul(E) * e_mask1 * e_mask2                        # bs, n, n, dx
+        E1 = self.e_mul(E) * edge_mask                        # bs, n, n, dx
         E1 = E1.reshape((E.size(0), E.size(1), E.size(2), self.n_head, self.df))
 
-        E2 = self.e_add(E) * e_mask1 * e_mask2                        # bs, n, n, dx
+        E2 = self.e_add(E) * edge_mask                        # bs, n, n, dx
         E2 = E2.reshape((E.size(0), E.size(1), E.size(2), self.n_head, self.df))
 
         # Incorporate edge features to the self attention scores.
@@ -173,11 +175,14 @@ class NodeEdgeBlock(nn.Module):
         newE = Y.flatten(start_dim=3)                      # bs, n, n, dx
         ye1 = self.y_e_add(y).unsqueeze(1).unsqueeze(1)  # bs, 1, 1, de
         ye2 = self.y_e_mul(y).unsqueeze(1).unsqueeze(1)
-        newE = ye1 + (ye2 + 1) * newE
+        # newE = ye1 + (ye2 + 1) * newE
+        newE = (ye1 + (ye2 + 1) * newE) * edge_mask
 
         # Output E
-        newE = self.e_out(newE) * e_mask1 * e_mask2      # bs, n, n, de
-        diffusion_utils.assert_correctly_masked(newE, e_mask1 * e_mask2)
+        newE = self.e_out(newE) * edge_mask      # bs, n, n, de
+        
+        diffusion_utils.assert_correctly_masked(newE, edge_mask)
+                
 
         # Compute attentions. attn is still (bs, n, n, n_head, df)
         softmax_mask = e_mask2.expand(-1, n, -1, self.n_head)    # bs, 1, n, 1
@@ -225,6 +230,8 @@ class GraphTransformer(nn.Module):
         self.out_dim_X = output_dims['X']
         self.out_dim_E = output_dims['E']
         self.out_dim_y = output_dims['y']
+
+        # print("in transformer model", input_dims, output_dims)
 
         self.mlp_in_X = nn.Sequential(nn.Linear(input_dims['X'], hidden_mlp_dims['X']), act_fn_in,
                                       nn.Linear(hidden_mlp_dims['X'], hidden_dims['dx']), act_fn_in)

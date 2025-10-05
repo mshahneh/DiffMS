@@ -7,6 +7,7 @@ from rdkit import Chem
 from rdkit.Chem import Descriptors
 
 from diffms.mist import utils
+import hashlib
 
 
 class Spectra(object):
@@ -119,7 +120,9 @@ class Mol(object):
             try:
                 self.inchikey = Chem.MolToInchiKey(mol)
             except:
-                return None
+                # make a random unique hash if InChIKey generation fails
+                self.inchikey = hashlib.sha256(self.smiles.encode()).hexdigest()[0:27]
+                
 
         self.mol_formula = mol_formula
         if self.mol_formula is None:

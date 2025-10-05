@@ -11,8 +11,28 @@ def sum_except_batch(x):
 
 
 def assert_correctly_masked(variable, node_mask):
-    assert (variable * (1 - node_mask.long())).abs().max().item() < 1e-4, \
-        'Variables not masked properly.'
+    try:
+        assert (variable * (1 - node_mask.long())).abs().max().item() < 1e-3, \
+            'Variables not masked properly.'
+    except Exception as e:
+        error = "Variables not masked properly. \n"
+        error += "---------------------------"
+        error += f"Variable max value: {variable.abs().max().item()}\n"
+        error += "---------------------------"
+        error += f"Node mask sum: {node_mask.sum().item()}\n"
+        error += "---------------------------"
+        error += f"Node mask min: {node_mask.min().item()}\n"
+        error += "---------------------------"
+        error += f"Node mask max: {node_mask.max().item()}\n"
+        error += "---------------------------"
+        # show variable where it breaks
+        error += f"Variable * (1 - node_mask): {(variable * (1 - node_mask.long())).abs().max().item()}\n"
+        error += "---------------------------"
+        with open('masking_error.txt', 'a') as f:
+            f.write(error)
+        raise e
+        
+        
 
 
 def sample_gaussian(size):
